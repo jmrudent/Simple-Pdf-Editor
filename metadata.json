@@ -1,0 +1,5 @@
+{
+  "name": "Simple PDF Editor",
+  "description": "Un éditeur de PDF simple et local. Ajoutez du texte, remplissez des formulaires et exportez sans serveur.",
+  "requestFramePermissions": []
+}

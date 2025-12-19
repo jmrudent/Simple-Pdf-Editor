@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simple PDF Editor (Local)</title>
+    
+    <!-- Styles -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body { background-color: #f3f4f6; color: #111827; }
+      .pdf-container { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: #f1f1f1; }
+      ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+      .loading-overlay {
+          position: absolute; inset: 0; background: rgba(255,255,255,0.8); 
+          display: flex; align-items: center; justify-content: center; z-index: 50;
+      }
+      /* Custom color picker style */
+      input[type="color"] {
+        -webkit-appearance: none;
+        border: none;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        overflow: hidden;
+        background: none;
+        cursor: pointer;
+      }
+      input[type="color"]::-webkit-color-swatch-wrapper {
+        padding: 0;
+      }
+      input[type="color"]::-webkit-color-swatch {
+        border: 1px solid #e5e7eb;
+        border-radius: 4px;
+      }
+    </style>
+
+    <!-- React & ReactDOM (UMD) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel pour compiler le JSX dans le navigateur -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- PDF Libraries -->
+    <script src="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "pdfjs-dist": "https://esm.sh/pdfjs-dist@^5.4.449",
+    "pdf-lib": "https://esm.sh/pdf-lib@^1.17.1",
+    "react": "https://esm.sh/react@^19.2.3",
+    "clsx": "https://esm.sh/clsx@^2.1.1",
+    "tailwind-merge": "https://esm.sh/tailwind-merge@^3.4.0",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0"
+  }
+}
+</script>
+</head>
+<body>
+    <div id="root">Chargement de l'application...</div>
+
+    <script type="text/babel">
+        // --- CONFIGURATION ---
+        const { useState, useEffect, useRef, useCallback, useLayoutEffect } = React;
+        const { PDFDocument, rgb, StandardFonts } = PDFLib;
+        
+        // Setup PDF.js Worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+        // --- UTILS ---
+        const hexToPdfColor = (hex) => {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || '#000000');
+            return result ? rgb(
+                parseInt(result[1], 16) / 255,
+                parseInt(result[2], 16) / 255,
+                parseInt(result[3], 16) / 255
+            ) : rgb(0, 0, 0);
+        };
+
+        const getFontStyles = (fontFamily) => {
+            const styles = { fontFamily: 'Helvetica, Arial, sans-serif', fontWeight: 'normal', fontStyle: 'normal' };
+            
+            if (fontFamily.includes('Times')) {
+                styles.fontFamily = '"Times New Roman", Times, serif';
+            } else if (fontFamily.includes('Courier')) {
+                styles.fontFamily = '"Courier New", Courier, monospace';
+            }
+
+            if (fontFamily.includes('Bold')) styles.fontWeight = 'bold';
+            if (fontFamily.includes('Italic') || fontFamily.includes('Oblique')) styles.fontStyle = 'italic';
+
+            return styles;
+        };
+
+        // --- ICONS ---
+        const Icon = ({ children, className, ...props }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>{children}</svg>
+        );
+        const UploadIcon = (props) => <Icon {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></Icon>;
+        const FileTextIcon = (props) => <Icon {...props}><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></Icon>;
+        const DownloadIcon = (props) => <Icon {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></Icon>;
+        const ChevronLeftIcon = (props) => <Icon {...props}><polyline points="15 18 9 12 15 6"/></Icon>;
+        const ChevronRightIcon = (props) => <Icon {...props}><polyline points="9 18 15 12 9 6"/></Icon>;
+        const ZoomInIcon = (props) => <Icon {...props}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></Icon>;
+        const ZoomOutIcon = (props) => <Icon {...props}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></Icon>;
+        const TrashIcon = (props) => <Icon {...props}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></Icon>;
+        const MoveIcon = (props) => <Icon {...props}><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="19 9 22 12 19 15"/><polyline points="15 19 12 22 9 19"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></Icon>;
+        
+        const ResizeHandleIcon = (props) => (
+             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" className={props.className}>
+                <path d="M11 1L1 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <path d="M11 5L5 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                <path d="M11 9L9 11" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+        );
+
+        // --- COMPONENTS ---
+
+        const Button = ({ className, variant = 'primary', size = 'md', children, ...props }) => {
+            const baseStyles = 'inline-flex items-center justify-center rounded-lg font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none';
+            const variants = {
+                primary: 'bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500',
+                secondary: 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50 focus:ring-blue-500',
+                ghost: 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 focus:ring-gray-500',
+            };
+            const sizes = { sm: 'px-3 py-1.5 text-sm', md: 'px-4 py-2 text-sm', lg: 'px-6 py-3 text-base' };
+            
+            return (
+                <button className={`${baseStyles} ${variants[variant]} ${sizes[size]} ${className || ''}`} {...props}>
+                    {children}
+                </button>
+            );
+        };
+
+        const PDFWorkspace = ({ pdfData, pageIndex, scale, attachments, onAddAttachment, onUpdateAttachment, onRemoveAttachment }) => {
+            const canvasRef = useRef(null);
+            const containerRef = useRef(null);
+            
+            // Interaction State
+            const [dragState, setDragState] = useState(null); // { type: 'MOVE' | 'RESIZE', id: string, startX: number, startY: number, initialData: object }
+
+            const [rendering, setRendering] = useState(false);
+
+            useEffect(() => {
+                let active = true;
+                if (canvasRef.current && pdfData) {
+                    const renderPage = async () => {
+                        try {
+                            setRendering(true);
+                            const dataCopy = pdfData.slice(0);
+                            
+                            const loadingTask = pdfjsLib.getDocument({ data: dataCopy });
+                            const pdf = await loadingTask.promise;
+                            const page = await pdf.getPage(pageIndex + 1);
+                            const viewport = page.getViewport({ scale });
+                            
+                            if (!active) return;
+
+                            const canvas = canvasRef.current;
+                            if (canvas) {
+                                canvas.height = viewport.height;
+                                canvas.width = viewport.width;
+
+                                await page.render({
+                                    canvasContext: canvas.getContext('2d'),
+                                    viewport: viewport
+                                }).promise;
+                            }
+                        } catch (err) {
+                            console.error("Render error:", err);
+                        } finally {
+                            if (active) setRendering(false);
+                        }
+                    };
+                    renderPage();
+                }
+                return () => { active = false; };
+            }, [pdfData, pageIndex, scale]);
+
+            const handleDoubleClick = (e) => {
+                if (!containerRef.current) return;
+                if (e.target.closest('.attachment-input')) return;
+
+                const rect = containerRef.current.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const clickY = e.clientY - rect.top;
+
+                // Calculer les coordonnées en "points PDF" (indépendant du zoom)
+                const pdfX = clickX / scale;
+                const pdfY = clickY / scale;
+
+                const defaultWidth = 200; // Largeur par défaut en points
+                const defaultHeight = 50; // Hauteur par défaut en points
+
+                // On veut que le clic soit en bas à gauche.
+                // Donc le top (y) doit être remonté de la hauteur.
+                const finalY = pdfY - defaultHeight;
+
+                onAddAttachment({
+                    id: crypto.randomUUID(),
+                    x: pdfX,
+                    y: finalY,
+                    width: defaultWidth,
+                    height: defaultHeight,
+                    text: "Nouveau texte",
+                    fontSize: 16,
+                    fontFamily: 'Helvetica',
+                    color: '#000000',
+                    pageIndex
+                });
+            };
+
+            const handleMouseDownMove = (e, id) => {
+                e.stopPropagation();
+                const attachment = attachments.find(a => a.id === id);
+                if (attachment) {
+                    setDragState({
+                        type: 'MOVE',
+                        id,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        initialX: attachment.x,
+                        initialY: attachment.y
+                    });
+                }
+            };
+
+            const handleMouseDownResize = (e, id) => {
+                e.stopPropagation();
+                const attachment = attachments.find(a => a.id === id);
+                if (attachment) {
+                    setDragState({
+                        type: 'RESIZE',
+                        id,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        initialW: attachment.width,
+                        initialH: attachment.height
+                    });
+                }
+            };
+
+            const handleMouseMove = useCallback((e) => {
+                if (!dragState) return;
+
+                const dxScreen = e.clientX - dragState.startX;
+                const dyScreen = e.clientY - dragState.startY;
+
+                // Convertir le déplacement écran en déplacement PDF (diviser par scale)
+                const dxPdf = dxScreen / scale;
+                const dyPdf = dyScreen / scale;
+
+                const att = attachments.find(a => a.id === dragState.id);
+                if (!att) return;
+
+                if (dragState.type === 'MOVE') {
+                    onUpdateAttachment({
+                        ...att,
+                        x: dragState.initialX + dxPdf,
+                        y: dragState.initialY + dyPdf
+                    });
+                } else if (dragState.type === 'RESIZE') {
+                    onUpdateAttachment({
+                        ...att,
+                        width: Math.max(50, dragState.initialW + dxPdf),
+                        height: Math.max(20, dragState.initialH + dyPdf)
+                    });
+                }
+            }, [dragState, scale, attachments, onUpdateAttachment]);
+
+            const handleMouseUp = useCallback(() => {
+                setDragState(null);
+            }, []);
+
+            useEffect(() => {
+                if (dragState) {
+                    window.addEventListener('mousemove', handleMouseMove);
+                    window.addEventListener('mouseup', handleMouseUp);
+                }
+                return () => {
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    window.removeEventListener('mouseup', handleMouseUp);
+                };
+            }, [dragState, handleMouseMove, handleMouseUp]);
+
+            return (
+                <div className="relative inline-block shadow-lg bg-white mt-8 mb-8 pdf-container min-h-[200px] min-w-[200px]">
+                    {rendering && <div className="loading-overlay"><span>Chargement...</span></div>}
+                    <canvas ref={canvasRef} className="block" />
+                    <div 
+                        ref={containerRef}
+                        className="absolute inset-0 cursor-crosshair z-10"
+                        onDoubleClick={handleDoubleClick}
+                    >
+                        {attachments
+                            .filter(att => att.pageIndex === pageIndex)
+                            .map(att => (
+                                <div
+                                    key={att.id}
+                                    className="absolute group attachment-input hover:ring-1 hover:ring-blue-300 hover:bg-blue-50/20"
+                                    style={{ 
+                                        left: att.x * scale, 
+                                        top: att.y * scale,
+                                        width: att.width * scale,
+                                        height: att.height * scale
+                                    }}
+                                >
+                                    {/* TOOLBAR (Visible on hover/focus) */}
+                                    <div className="absolute -top-12 left-0 bg-white rounded-lg shadow-xl border border-gray-200 p-1.5 flex items-center gap-2 z-30 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity whitespace-nowrap">
+                                        
+                                        {/* Drag Handle */}
+                                        <div 
+                                            className="cursor-grab p-1 hover:bg-gray-100 rounded text-gray-500 hover:text-blue-600"
+                                            onMouseDown={(e) => handleMouseDownMove(e, att.id)}
+                                            title="Déplacer"
+                                        >
+                                            <MoveIcon size={16} />
+                                        </div>
+
+                                        <div className="w-px h-4 bg-gray-200 mx-1"></div>
+
+                                        {/* Font Family */}
+                                        <select 
+                                            value={att.fontFamily || 'Helvetica'} 
+                                            onChange={e => onUpdateAttachment({...att, fontFamily: e.target.value})}
+                                            className="text-xs border border-gray-200 rounded px-1 py-1 focus:ring-2 focus:ring-blue-200 outline-none max-w-[120px]"
+                                            title="Police"
+                                        >
+                                            <option value="Helvetica">Helvetica</option>
+                                            <option value="Helvetica-Bold">Helvetica Bold</option>
+                                            <option value="Times-Roman">Times New Roman</option>
+                                            <option value="Times-Bold">Times Bold</option>
+                                            <option value="Times-BoldItalic">Times Italic</option>
+                                            <option value="Courier">Courier</option>
+                                            <option value="Courier-Bold">Courier Bold</option>
+                                        </select>
+                                        
+                                        {/* Size */}
+                                        <input 
+                                            type="number" 
+                                            value={att.fontSize} 
+                                            onChange={e => onUpdateAttachment({...att, fontSize: Number(e.target.value)})}
+                                            className="w-12 text-xs border border-gray-200 rounded px-1 py-1 focus:ring-2 focus:ring-blue-200 outline-none"
+                                            min="8" max="72"
+                                            title="Taille (pt)"
+                                        />
+
+                                        {/* Color */}
+                                        <div className="relative w-6 h-6 rounded overflow-hidden border border-gray-200 hover:border-gray-400">
+                                            <input 
+                                                type="color" 
+                                                value={att.color || '#000000'} 
+                                                onChange={e => onUpdateAttachment({...att, color: e.target.value})}
+                                                className="absolute -top-1 -left-1 w-8 h-8 cursor-pointer"
+                                                title="Couleur"
+                                            />
+                                        </div>
+
+                                        <div className="w-px h-4 bg-gray-200 mx-1"></div>
+
+                                        {/* Delete */}
+                                         <button
+                                            onClick={(e) => { e.stopPropagation(); onRemoveAttachment(att.id); }}
+                                            className="text-gray-400 hover:text-red-600 p-1 hover:bg-red-50 rounded"
+                                            title="Supprimer"
+                                        >
+                                            <TrashIcon size={16} />
+                                        </button>
+                                    </div>
+                                    
+                                    {/* Champ de texte */}
+                                    <textarea
+                                        value={att.text}
+                                        onChange={(e) => onUpdateAttachment({ ...att, text: e.target.value })}
+                                        className="w-full h-full bg-transparent border border-transparent focus:border-blue-500 focus:bg-white/50 focus:ring-1 focus:ring-blue-200 outline-none p-1 resize-none leading-tight overflow-hidden"
+                                        style={{ 
+                                            ...getFontStyles(att.fontFamily),
+                                            fontSize: `${att.fontSize * scale}px`, // Scaling applied here
+                                            color: att.color || '#000000',
+                                            whiteSpace: 'pre-wrap'
+                                        }}
+                                        autoFocus={att.text === "Nouveau texte"}
+                                    />
+
+                                    {/* Poignée de redimensionnement (bas droite) */}
+                                    <div
+                                        className="absolute right-0 bottom-0 cursor-nwse-resize text-blue-500 opacity-0 group-hover:opacity-100 z-20 p-0.5"
+                                        onMouseDown={(e) => handleMouseDownResize(e, att.id)}
+                                    >
+                                        <ResizeHandleIcon className="w-4 h-4" />
+                                    </div>
+                                </div>
+                            ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- MAIN APP ---
+
+        const App = () => {
+            const [file, setFile] = useState(null);
+            const [pdfData, setPdfData] = useState(null);
+            const [numPages, setNumPages] = useState(0);
+            const [currentPage, setCurrentPage] = useState(0);
+            const [scale, setScale] = useState(1.3);
+            const [attachments, setAttachments] = useState([]);
+            const [isExporting, setIsExporting] = useState(false);
+
+            const handleFileChange = async (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    const selectedFile = e.target.files[0];
+                    setFile(selectedFile);
+                    try {
+                        const buffer = await selectedFile.arrayBuffer();
+                        const dataCopy = buffer.slice(0);
+                        const loadingTask = pdfjsLib.getDocument({ data: dataCopy });
+                        const pdf = await loadingTask.promise;
+                        
+                        setPdfData(buffer);
+                        setNumPages(pdf.numPages);
+                        setCurrentPage(0);
+                        setAttachments([]);
+                    } catch (error) {
+                        console.error("Error loading PDF", error);
+                        alert("Impossible de charger le PDF.");
+                    }
+                }
+            };
+
+            const handleExport = async () => {
+                if (!pdfData) return;
+                setIsExporting(true);
+                try {
+                    const dataCopy = pdfData.slice(0);
+                    const pdfDoc = await PDFDocument.load(dataCopy);
+                    
+                    // Embed Fonts
+                    const fonts = {
+                        'Helvetica': await pdfDoc.embedFont(StandardFonts.Helvetica),
+                        'Helvetica-Bold': await pdfDoc.embedFont(StandardFonts.HelveticaBold),
+                        'Times-Roman': await pdfDoc.embedFont(StandardFonts.TimesRoman),
+                        'Times-Bold': await pdfDoc.embedFont(StandardFonts.TimesRomanBold),
+                        'Times-BoldItalic': await pdfDoc.embedFont(StandardFonts.TimesRomanBoldItalic),
+                        'Courier': await pdfDoc.embedFont(StandardFonts.Courier),
+                        'Courier-Bold': await pdfDoc.embedFont(StandardFonts.CourierBold),
+                    };
+
+                    const pages = pdfDoc.getPages();
+
+                    for (const att of attachments) {
+                        if (att.pageIndex >= pages.length) continue;
+                        const page = pages[att.pageIndex];
+                        const { height } = page.getSize();
+                        
+                        const fontSize = att.fontSize;
+                        const lineHeight = fontSize * 1.25;
+                        
+                        // Largeur en points (pas besoin de diviser par scale car att.width est en points)
+                        const maxWidth = att.width;
+                        
+                        // Select font
+                        const font = fonts[att.fontFamily] || fonts['Helvetica'];
+                        
+                        // Parse color
+                        const color = hexToPdfColor(att.color);
+
+                        // Position en points (pas besoin de diviser par scale)
+                        // x: ajout de padding
+                        // y: ajustement pour que le haut du texte corresponde à peu près au haut de la boîte
+                        const y = height - att.y - fontSize + 4; 
+                        const x = att.x + 4;
+
+                        page.drawText(att.text, {
+                            x: x,
+                            y: y,
+                            size: fontSize,
+                            font: font,
+                            color: color,
+                            maxWidth: maxWidth,
+                            lineHeight: lineHeight,
+                        });
+                    }
+
+                    const pdfBytes = await pdfDoc.save();
+                    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `edited_${file?.name || 'document.pdf'}`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                } catch (err) {
+                    console.error("Export Error:", err);
+                    alert("Erreur lors de l'exportation.");
+                } finally {
+                    setIsExporting(false);
+                }
+            };
+
+            if (!file || !pdfData) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+                        <div className="max-w-md w-full bg-white rounded-xl shadow-xl p-10 text-center">
+                            <div className="bg-blue-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <FileTextIcon className="w-10 h-10 text-blue-600" />
+                            </div>
+                            <h1 className="text-2xl font-bold text-gray-900 mb-2">Éditeur PDF Simple</h1>
+                            <p className="text-gray-500 mb-8">Modifiez vos PDF localement. 100% sans serveur.</p>
+                            <label className="cursor-pointer inline-block">
+                                <input type="file" accept=".pdf" onChange={handleFileChange} className="hidden" />
+                                <div className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
+                                    <UploadIcon size={20} />
+                                    <span>Choisir un fichier PDF</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="flex flex-col h-screen bg-gray-100">
+                    <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between z-20 shadow-sm sticky top-0">
+                        <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-2 text-blue-600 font-bold text-xl">
+                                <FileTextIcon /> <span>PDF Editor</span>
+                            </div>
+                            <span className="text-sm text-gray-500 truncate max-w-[200px] hidden sm:block">{file.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="flex items-center bg-gray-100 rounded-lg p-1 mr-4">
+                                <button onClick={() => setScale(s => Math.max(0.5, s - 0.1))} className="p-1.5 hover:bg-white rounded text-gray-600"><ZoomOutIcon size={18} /></button>
+                                <span className="px-2 text-xs font-mono w-12 text-center">{Math.round(scale * 100)}%</span>
+                                <button onClick={() => setScale(s => Math.min(3, s + 0.1))} className="p-1.5 hover:bg-white rounded text-gray-600"><ZoomInIcon size={18} /></button>
+                            </div>
+                            <Button variant="ghost" onClick={() => setFile(null)}>Fermer</Button>
+                            <Button onClick={handleExport} disabled={isExporting} className="gap-2">
+                                {isExporting ? '...' : <><DownloadIcon size={18} /> <span className="hidden sm:inline">Exporter</span></>}
+                            </Button>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 overflow-auto bg-gray-200 flex justify-center relative">
+                        <div className="pb-24 pt-4">
+                            <PDFWorkspace
+                                pdfData={pdfData}
+                                pageIndex={currentPage}
+                                scale={scale}
+                                attachments={attachments}
+                                onAddAttachment={a => setAttachments([...attachments, a])}
+                                onUpdateAttachment={u => setAttachments(prev => prev.map(a => a.id === u.id ? u : a))}
+                                onRemoveAttachment={id => setAttachments(prev => prev.filter(a => a.id !== id))}
+                            />
+                        </div>
+                        
+                        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white rounded-full shadow-lg border border-gray-200 p-2 flex items-center gap-4 z-30">
+                            <button onClick={() => setCurrentPage(p => Math.max(0, p - 1))} disabled={currentPage === 0} className="p-2 rounded-full hover:bg-gray-100 disabled:opacity-30"><ChevronLeftIcon size={20} /></button>
+                            <span className="text-sm font-medium text-gray-700">Page {currentPage + 1} / {numPages}</span>
+                            <button onClick={() => setCurrentPage(p => Math.min(numPages - 1, p + 1))} disabled={currentPage === numPages - 1} className="p-2 rounded-full hover:bg-gray-100 disabled:opacity-30"><ChevronRightIcon size={20} /></button>
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
